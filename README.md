@@ -343,22 +343,46 @@ ls "$DEPS_RVV/share/eigen3/cmake/Eigen3Config.cmake"
 使用方法：
 
 ```
+# 0) 安全进入 gcc14（避免 set -u 影响 enable）
+set +u
+source /opt/openEuler/gcc-toolset-14/enable
+set -u
 
-INC_BASE="$DEPS_BASE/include/eigen3"
-INC_RVV="$DEPS_RVV/include/eigen3"
+# 1) 选择一个你肯定可写的目录（建议归档到 results）
+CHECK_DIR="$HOME/results/ceres_pose_graph_2d/eigen_check"
+mkdir -p "$CHECK_DIR"
 
-rm -f /tmp/eigen_check_base /tmp/eigen_check_rvv
-
-# base：必须 __riscv_vector=0（等价于“无 RVV 指令能力”）
-g++ $FLAGS_BASE -I"$INC_BASE" /tmp/eigen_rvv_check.cc -o /tmp/eigen_check_base
-/tmp/eigen_check_base
-
-# rvv：必须 __riscv_vector=1 且 EIGEN_RISCV64_USE_RVV10 生效
-g++ $FLAGS_RVV $RVV_DEFINES -I"$INC_RVV" /tmp/eigen_rvv_check.cc -o /tmp/eigen_check_rvv
-/tmp/eigen_check_rvv
+# 2) 用 vi 写入 check 源码（按你习惯）
+vi "$CHECK_DIR/eigen_rvv_check.cc"
 ```
 
+继续编译并执行：
 
+```
+# 3) 准备变量（如果你已经在别处设过，这里不会覆盖）
+OPT_FLAGS="-O3 -DNDEBUG"
+FLAGS_BASE="${FLAGS_BASE:-$OPT_FLAGS -march=rv64gc -mabi=lp64d}"
+FLAGS_RVV="${FLAGS_RVV:-$OPT_FLAGS -march=rv64gcv_zvl256b -mabi=lp64d -mrvv-vector-bits=zvl}"
+RVV_DEFINES="${RVV_DEFINES:--DEIGEN_RISCV64_USE_RVV10}"
+
+INC_BASE="${INC_BASE:-$HOME/cartodeps/base/include/eigen3}"
+INC_RVV="${INC_RVV:-$HOME/cartodeps/rvv/include/eigen3}"
+test -d "$INC_BASE"
+test -d "$INC_RVV"
+
+# 4) 编译
+g++ -std=c++17 $FLAGS_BASE -I"$INC_BASE" "$CHECK_DIR/eigen_rvv_check.cc" -o "$CHECK_DIR/eigen_check_base"
+g++ -std=c++17 $FLAGS_RVV  $RVV_DEFINES -I"$INC_RVV"  "$CHECK_DIR/eigen_rvv_check.cc" -o "$CHECK_DIR/eigen_check_rvv"
+
+# 5) 运行
+"$CHECK_DIR/eigen_check_base"
+"$CHECK_DIR/eigen_check_rvv"
+```
+
+判定标准为：
+
+- base 输出应包含：__riscv_vector=not_defined
+- rvv 输出应包含：__riscv_vector=1 且 EIGEN_RISCV64_USE_RVV10=1
 
 #### 3.2 编译 ceres
 
