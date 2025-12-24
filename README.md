@@ -386,6 +386,8 @@ g++ -std=c++17 $FLAGS_RVV  $RVV_DEFINES -I"$INC_RVV"  "$CHECK_DIR/eigen_rvv_chec
 
 #### 3.2 编译 ceres
 
+> ceres 在全核心的情况下编译时间预估：2～3 小时。
+
 拉取并编译两套 Ceres：
 
 ```
