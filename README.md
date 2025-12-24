@@ -401,7 +401,26 @@ cd "$HOME/ceres-solver"
 编译 ceres-base：
 
 ```
-# ---- Ceres base（链接 base Eigen，且整体无 RVV 指令：FLAGS_BASE）----
+# 进入 gcc14 环境
+source /opt/openEuler/gcc-toolset-14/enable
+
+# 前缀（base）
+export DEPS_BASE="$HOME/cartodeps/base"
+
+# 编译器
+export CC=gcc
+export CXX=g++
+
+# 明确区分：base=无 RVV；rvv=有 RVV（rvv 这里先不建）
+export OPT_FLAGS="-O3 -DNDEBUG -ffast-math -fno-math-errno -fno-trapping-math -funroll-loops"
+export FLAGS_BASE="${OPT_FLAGS} -march=rv64gc -mabi=lp64d"
+
+# 关键：把 Ceres 自带的 abseil-cpp 子模块拉下来（否则必然回退系统 absl）
+cd ~/ceres-solver
+git submodule update --init --recursive
+ls -la third_party/abseil-cpp | head -n 5
+
+# 重新配置 + 编译安装（默认全核）
 rm -rf build-base
 cmake -S . -B build-base -GNinja \
   -DCMAKE_BUILD_TYPE=Release \
@@ -415,7 +434,8 @@ cmake -S . -B build-base -GNinja \
   -DBUILD_EXAMPLES=ON \
   -DCMAKE_AR=/usr/bin/ar \
   -DCMAKE_RANLIB=/usr/bin/ranlib
-ninja -C build-base install
+
+ninja -C build-base -j"$(nproc)" install
 ```
 
 编译 ceres rvv：
