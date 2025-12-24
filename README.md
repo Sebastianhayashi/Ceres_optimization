@@ -31,6 +31,18 @@
 
 > 如要根据本文进行复现，请先提前准备好如上文件结构。
 
+```
+# prepare folders
+
+
+mkdir -p \
+  ~/cartodeps/{base,rvv} \
+  ~/eigen-rvv-exp \
+  ~/cartographer_ws/{src,build-base,build-rvv} \
+  ~/datasets/g2o \
+  ~/results/ceres_pose_graph_2d
+```
+
 ### 1 依赖准备
 
 系统中默认的 gcc 版本为 12，但是为了保持与 [eigen-compare](https://github.com/Sebastianhayashi/eigen-compare) 一样的环境，统一使用 gcc 14:
