@@ -457,3 +457,30 @@ ninja -C build-rvv
 
 ## 测试数据集选取
 
+获取数据集：
+
+```
+# 获取 planar pose graph 的 g2o 数据集
+cd ~
+git clone https://github.com/corelabuf/planar_pgo_datasets.git
+
+# 查看数据文件（仓库内 datasets 目录）
+cd ~/planar_pgo_datasets/datasets
+ls -lh *.g2o | head
+```
+
+### 选取的理由
+
+我们的目的是：把 Eigen RVV patch 对 Ceres（再到 Cartographer）的性能影响。
+
+也就是我们在选择数据集的时候标准为：最小化系统噪声、最大化命中线性代数热路径、便于重复统计。所以对于数据集而言，需要具备下面的特性：
+
+- 多规模 + 多噪声
+- 计算结构匹配
+- 输入格式（.g2o）直接可用
+
+## 性能测试
+
+
+
+
