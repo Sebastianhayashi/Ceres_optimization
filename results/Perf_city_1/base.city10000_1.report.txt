@@ -1,0 +1,30 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 25K of event 'cpu-clock'
+# Event count (approx.): 25297000000
+#
+# Overhead  Command        Shared Object                Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  .............  ...........................  .................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    54.00%  pose_graph_2d  pose_graph_2d                [.] void Eigen::SimplicialCholeskyBase<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double, 0, int>, 2, Eigen::NaturalOrdering<int> > >::factorize_preordered<true, false>(Eigen::SparseMatrix<double, 0, int> const&)
+     4.36%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::InnerProductComputer::Compute()
+     3.34%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::BlockEvaluatePreparer::Prepare(ceres::internal::ResidualBlock const*, int, ceres::internal::SparseMatrix*, double**)
+     2.93%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::ResidualBlock::Evaluate(bool, double*, double*, double**, double*) const
+     1.84%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::Program::StateVectorToParameterBlocks(double const*)
+     1.79%  pose_graph_2d  pose_graph_2d                [.] Eigen::internal::sparse_solve_triangular_selector<Eigen::Transpose<Eigen::SparseMatrix<double, 0, int> const> const, Eigen::Map<Eigen::Matrix<double, -1, 1, 0, -1, 1>, 0, Eigen::Stride<0, 0> >, 6, 2, 1>::run(Eigen::Transpose<Eigen::SparseMatrix<double, 0, int> const> const&, Eigen::Map<Eigen::Matrix<double, -1, 1, 0, -1, 1>, 0, Eigen::Stride<0, 0> >&) [clone .isra.0]
+     1.78%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::Program::Plus(double const*, double const*, double*, ceres::internal::ContextImpl*, int) const
+     1.50%  pose_graph_2d  pose_graph_2d                [.] void ceres::internal::ParallelFor<ceres::internal::ProgramEvaluator<ceres::internal::BlockEvaluatePreparer, ceres::internal::BlockJacobianWriter, ceres::internal::NullJacobianFinalizer>::Evaluate(ceres::internal::Evaluator::EvaluateOptions const&, double const*, double*, double*, double*, ceres::internal::SparseMatrix*)::{lambda(int, int)#1}>(ceres::internal::ContextImpl*, int, int, int, ceres::internal::ProgramEvaluator<ceres::internal::BlockEvaluatePreparer, ceres::internal::BlockJacobianWriter, ceres::internal::NullJacobianFinalizer>::Evaluate(ceres::internal::Evaluator::EvaluateOptions const&, double const*, double*, double*, double*, ceres::internal::SparseMatrix*)::{lambda(int, int)#1}&&, int)
+     1.48%  pose_graph_2d  pose_graph_2d                [.] bool ceres::internal::AutoDifferentiate<3, ceres::internal::ParameterDims<false, 1, 1, 1, 1, 1, 1>, ceres::examples::PoseGraph2dErrorTerm, double>(ceres::examples::PoseGraph2dErrorTerm const&, double const* const*, int, double*, double**) [clone .isra.0]
+     1.14%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::BlockSparseMatrix::RightMultiplyAndAccumulate(double const*, double*, ceres::internal::ContextImpl*, int) const
+     1.09%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::BlockSparseMatrix::ScaleColumns(double const*)
+     1.04%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::BlockSparseMatrix::AppendRows(ceres::internal::BlockSparseMatrix const&)
+     1.01%  pose_graph_2d  pose_graph_2d                [.] ceres::internal::BlockSparseMatrix::SquaredColumnNorm(double*) const
+     1.00%  pose_graph_2d  pose_graph_2d                [.] Eigen::internal::sparse_solve_triangular_selector<Eigen::SparseMatrix<double, 0, int> const, Eigen::Map<Eigen::Matrix<double, -1, 1, 0, -1, 1>, 0, Eigen::Stride<0, 0> >, 5, 1, 0>::run(Eigen::SparseMatrix<double, 0, int> const&, Eigen::Map<Eigen::Matrix<double, -1, 1, 0, -1, 1>, 0, Eigen::Stride<0, 0> >&)
+
+
+#
+# (Tip: To report cacheline events from previous recording: perf c2c report)
+#

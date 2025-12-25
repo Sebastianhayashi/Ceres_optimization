@@ -833,3 +833,182 @@ lin_delta_s 2.121s，占 46.4%（比 Jacobian 还多）
 
 在后续的优化思路中不要指望“全局开 RVV”能自动加速稀疏分解，理由是：lin_contrib_pct >= 40%。
 
+于是选择了两个 case 做 perf。这两个 case 需要具备下面两个条件：
+
+- 一个 jac_contrib 高
+- 一个 lin_contrib 高
+
+所以最后选择了 city10000_1 跟 city10000_3。
+防止出现变量混乱所以提前固定一下路径：
+
+```bash
+BASE_EXE="$HOME/ceres-solver/build-base/bin/pose_graph_2d"
+RVV_EXE="$HOME/ceres-solver/build-rvv/bin/pose_graph_2d"
+
+DEPS_BASE="$HOME/cartodeps/base"
+DEPS_RVV="$HOME/cartodeps/rvv"
+
+DATA_DIR="$HOME/planar_pgo_datasets/datasets"
+CASE1="$DATA_DIR/city10000_1.g2o"
+CASE3="$DATA_DIR/city10000_3.g2o"
+
+test -x"$BASE_EXE" &&test -x"$RVV_EXE"
+test -f"$CASE1" &&test -f"$CASE3"
+
+```
+
+再固定 CPU（避免调度噪声）：
+
+```bash
+PIN="taskset -c 0"
+```
+
+一键跑 perf record + report（对两个数据集各跑 base/rvv）：
+
+```
+OUT="$HOME/results/ceres_pose_graph_2d/perf_city_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUT"
+
+run_one () {
+  local tag="$1"        # base / rvv
+  local dataset="$2"    # city10000_1 or city10000_3
+  local input="$3"      # *.g2o path
+
+  local exe deps
+  if [[ "$tag" == "base" ]]; then
+    exe="$BASE_EXE"; deps="$DEPS_BASE"
+  else
+    exe="$RVV_EXE";  deps="$DEPS_RVV"
+  fi
+
+  # 绑定对应依赖，避免库混用
+  export LD_LIBRARY_PATH="$deps/lib64:$deps/lib:${LD_LIBRARY_PATH:-}"
+
+  # warm-up（减少首次页错误/缓存冷启动影响）
+  $PIN "$exe" --input="$input" >/dev/null 2>&1 || true
+
+  # 采样：cpu-clock 不依赖硬件 PMU，兼容性最好
+  $PIN perf record -e cpu-clock -c 1000000 \
+    -o "$OUT/$tag.$dataset.data" \
+    -- "$exe" --input="$input" \
+    >"$OUT/$tag.$dataset.stdout" 2>"$OUT/$tag.$dataset.stderr" || true
+
+  # 生成热点符号报告（非调用栈版本，先快速定位“热点是谁”）
+  perf report --stdio -i "$OUT/$tag.$dataset.data" \
+    --no-children --percent-limit 1 \
+    | head -n 200 > "$OUT/$tag.$dataset.report.txt"
+
+  echo "DONE $tag $dataset -> $OUT/$tag.$dataset.report.txt"
+}
+
+run_one base city10000_1 "$CASE1"
+run_one rvv  city10000_1 "$CASE1"
+run_one base city10000_3 "$CASE3"
+run_one rvv  city10000_3 "$CASE3"
+
+echo "OUT=$OUT"
+
+```
+
+得到了下面四个结果：
+
+- [base.city10000_1.report.txt](./results/Perf_city_1/base.city10000_1.report.txt)
+- [rvv.city10000_1.report.txt](./results/Perf_city_1/rvv.city10000_1.report.txt)
+- [base.city10000_3.report.txt](./results/Perf_city_1/base.city10000_3.report.txt)
+- [rvv.city10000_3.report.txt](./results/Perf_city_1/rvv.city10000_3.report.txt)
+
+无论 city10000_1 还是 city10000_3，Top1 都是：
+
+```
+Eigen::SimplicialCholeskyBase<...>::factorize_preordered<true,false>(SparseMatrix...)
+```
+占比：
+
+- city10000_1：base 54.00%，rvv 50.65%
+- city10000_3：base 57.95%，rvv 54.89%
+
+这说明：线性求解器（稀疏分解）和上面的结论（线性求解占用最大）一致。
+
+接着在同一数据集 base vs rvv 做差分：
+
+```
+perf diff -c ratio -s symbol,dso \
+  "$OUT/base.city10000_1.data" "$OUT/rvv.city10000_1.data" \
+  | head -n 120 | tee "$OUT/diff.city10000_1.txt"
+
+```
+
+```
+perf diff -c ratio -s symbol,dso \
+  "$OUT/base.city10000_3.data" "$OUT/rvv.city10000_3.data" \
+  | head -n 120 | tee "$OUT/diff.city10000_3.txt"
+
+```
+
+> 这一步 diff ratio 则是在求相对变化，也就是说 ratio = S_rvv / S_base，相对变化（百分比） = (S_rvv - S_base) / S_base。(S_rvv - S_base) / S_base = (S_rvv / S_base) - 1 = ratio - 1。所以“rvv-base 再除以 base”：pct_change = (ratio - 1) * 100%。
+
+根据 diff 出来的结果得出结论：
+
+两个 case（city10000_1 / city10000_3）共同指向 AutoDifferentiate（Jet）显著变慢（~2.5–2.7x）：
+- city10000_1：`AutoDifferentiate<...PoseGraph2dErrorTerm...>` ratio **2.48** diff.city10000_1
+- city10000_3：同类 `AutoDifferentiate` ratio **2.67** diff.city10000_3
+
+Eigen 的 generic_dense_assignment_kernel（Jet 赋值/小矩阵乘等）明显变慢（~1.9–2.3x）：
+- city10000_1：`generic_dense_assignment_kernel<...Jet...>` ratio **2.31** diff.city10000_1
+- city10000_3：同类 kernel ratio **1.92** diff.city10000_3
+
+> Jacobian 变慢主要是因为Jet 的算术 + 小尺寸 dense 内核，编译器/库走 RVV 后反而性能下降。
+
+> generic_dense_assignment_kernel 是Jet 赋值/小矩阵乘等
+city10000_1](./results/Perf_city_1/diff.city10000_1.txt)
+
+**构造正规方程/矩阵操作相关的 Ceres 内部算子也变慢（~1.2–1.7x）**
+
+- `InnerProductComputer::Compute()`：
+    - city10000_1 ratio **1.24** diff.city10000_1
+    - city10000_3 ratio **1.25** diff.city10000_3
+- `BlockSparseMatrix::ScaleColumns / SquaredColumnNorm`：
+    - city10000_1：ScaleColumns ratio **1.65**、SquaredColumnNorm ratio **1.57** diff.city10000_1
+    - city10000_3：ScaleColumns ratio **1.68**、SquaredColumnNorm ratio **1.58** diff.city10000_3
+- `ResidualBlock::Evaluate` 也有 ~1.24–1.27x 的变慢 diff.city10000_1 diff.city10000_3
+
+**稀疏 Cholesky（Eigen SimplicialLDLT factorize）只是小幅变慢（~+2%），但它占比太大，所以依旧是变慢**
+
+- city10000_1：`factorize_preordered` ratio **1.018**，baseline 占比 **54%** diff.city10000_1
+- city10000_3：`factorize_preordered` ratio **1.020**，baseline 占比 **57.95%** diff.city10000_3
+
+> 稀疏分解本身就会占 CPU 性能一半以上，导致就是就算是 2% 的性能损耗也会明显拉低速度。
+
+> 2% 指的是，city10000_1：ratio = 1.018373，变慢幅度 = (1.018373 − 1) × 100% ≈ 1.84%。以及，city10000_3：ratio = 1.020029，变慢幅度 = (1.020029 − 1) × 100% ≈ 2.00%。差不多简单说就是 2%。
+
+所以目前的情况看下来开了 RVV 反而变慢，但是情况应该是有很大一部分的计算被 RVV 加速给拖累了，讲道理也是预期行为，在测试 eigen 性能的时候图表就已经展现出了这个现象（除了部分如三角求解之外的性能持平甚至是下降）。
+
+所以应该是找到 RVV 能够加速的地方然后关闭不能加速甚至拖累速度的地方。
+
+接下来的思路就应该是，找到 RVV 能够加速的部分，然后关闭拖累的部分去进行编译，避免像上面那样全局开启 RVV。
+
+### 第二次测试
+
+所以 phase + perf diff 已经足够说明 Jacobian/AutoDiff/Jet 路径是显著拖慢速度了（AutoDifferentiate ~2.5x，Jet dense assignment ~2.3x），而这一类的计算（小尺寸 + Jet 类型 + 大量赋值/短向量操作）是很容易被向量化副优化的。
+
+所以理论上下一步我们将保留 RVV 架构与依赖栈不变，但分别关闭编译器自动向量化和 Eigen 向量化来做对照实验：若关闭向量化后 Jacobian 退化显著回落，则说明目前退化来自向量化负优化；后续策略是仅在收益明确的 kernel/模块开启 RVV，在 Jet/AutoDiff 等拖速度路径关闭。
+
+现在重新编译一份。原因是验证关向量化是否能把 Jacobian 的巨大回退压下去：
+
+```
+set -euo pipefail
+set +u; source /opt/openEuler/gcc-toolset-14/enable; set -u
+
+cd ~/ceres-solver
+rm -rf build-rvv-novec
+cmake -S . -B build-rvv-novec -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$HOME/cartodeps/rvv" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -fno-tree-vectorize"
+
+ninja -C build-rvv-novec -v -j8 pose_graph_2d
+
+# 跑验证：用这个新二进制替代原 RVV_EXE
+RVV_EXE="$HOME/ceres-solver/build-rvv-novec/bin/pose_graph_2d"
+echo "RVV_EXE=$RVV_EXE"
+```
