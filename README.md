@@ -443,7 +443,32 @@ ninja -C build-base -j"$(nproc)" install
 编译 ceres rvv：
 
 ```
-# ---- Ceres rvv（链接 RVV Eigen + 显式宏：FLAGS_RVV + RVV_DEFINES）----
+# ===== Ceres (rvv) build & install: links to Eigen in ~/cartodeps/rvv, enables RVV flags + EIGEN_RISCV64_USE_RVV10 =====
+set -euxo pipefail
+
+# 0) Enter gcc14 toolset (avoid set -u issues if you use it elsewhere)
+set +u
+source /opt/openEuler/gcc-toolset-14/enable
+set -u
+
+# 1) Prefix (rvv)
+export DEPS_RVV="$HOME/cartodeps/rvv"
+mkdir -p "$DEPS_RVV"
+
+# 2) Compilers
+export CC=gcc
+export CXX=g++
+
+# 3) RVV compile flags (rvv = with vector extension)
+export OPT_FLAGS="-O3 -DNDEBUG -ffast-math -fno-math-errno -fno-trapping-math -funroll-loops"
+export FLAGS_RVV="${OPT_FLAGS} -march=rv64gcv_zvl256b -mabi=lp64d -mrvv-vector-bits=zvl"
+export RVV_DEFINES="-DEIGEN_RISCV64_USE_RVV10"
+
+# 4) Ensure bundled abseil submodule is present (avoids missing abslConfig.cmake)
+cd "$HOME/ceres-solver"
+git submodule update --init --recursive
+
+# 5) Configure + build (full cores) + install
 rm -rf build-rvv
 cmake -S . -B build-rvv -GNinja \
   -DCMAKE_BUILD_TYPE=Release \
@@ -457,7 +482,11 @@ cmake -S . -B build-rvv -GNinja \
   -DBUILD_EXAMPLES=ON \
   -DCMAKE_AR=/usr/bin/ar \
   -DCMAKE_RANLIB=/usr/bin/ranlib
-ninja -C build-rvv install
+
+ninja -C build-rvv -j"$(nproc)" install
+
+# 6) Sanity check: ensure this build was configured against the RVV prefix Eigen
+grep -E "Eigen3_DIR:PATH=" -n build-rvv/CMakeCache.txt || true
 ```
 
 核对一下是否正确：
@@ -539,6 +568,268 @@ ls -lh *.g2o | head
 
 ## 性能测试
 
+目前搜集完数据集之后，写了两个脚本来自动化测试所有数据集并且记录结果：
 
+- [sweep_base.sh](./tools/sweep_base.sh)
+- [sweep_rvv.sh](./tools/sweep_rvv.sh)
 
+逻辑都是（唯一变量是使用的 eigen 是否带 rvv 加速指令）：
+
+- 进入 gcc14 环境
+- `DEPS_BASE=~/cartodeps/base`
+- `BIN_BASE=~/ceres-solver/build-base/bin/pose_graph_2d`
+- `DATA_DIR=~/planar_pgo_datasets/datasets`
+- 对每个 `.g2o`：在独立目录内执行
+    
+    `(/usr/bin/time -v "$BIN_BASE" --input="$f") 2>&1 | tee run.log`
+    
+    并从 `run.log` 解析 wall time / max RSS，写入 `summary.tsv`
+
+生成结果对比表：
+
+```
+BASE_DIR="$(ls -dt ~/results/ceres_pose_graph_2d/base_sweep_* | head -1)"
+RVV_DIR="$(ls -dt  ~/results/ceres_pose_graph_2d/rvv_sweep_*  | head -1)"
+
+phase="$RVV_DIR/phase_compare.tsv"
+delta="$RVV_DIR/phase_delta.tsv"
+
+echo -e "dataset\tbase_total\tbase_resid\tbase_jac\tbase_lin\trvv_total\trvv_resid\trvv_jac\trvv_lin" > "$phase"
+
+extract_one() {
+  awk '
+    # 只抓 “Time (in seconds):” 段的关键行，避免误匹配其它文本
+    $1=="Residual" && $2=="only" && $3=="evaluation" && $4 ~ /^[0-9]/ {ro=$4}
+    $1=="Jacobian" && $2=="&"    && $3=="residual"  && $4=="evaluation" && $5 ~ /^[0-9]/ {jr=$5}
+    $1=="Linear"   && $2=="solver" && $3 ~ /^[0-9]/ {ls=$3}
+    $1=="Total" && $2 ~ /^[0-9]/ {tot=$2}
+    END { printf "%s\t%s\t%s\t%s\n", tot+0, ro+0, jr+0, ls+0 }
+  ' "$1"
+}
+
+for d in "$BASE_DIR"/*; do
+  [[ -d "$d" ]] || continue
+  name="$(basename "$d")"
+  b_log="$BASE_DIR/$name/run.log"
+  r_log="$RVV_DIR/$name/run.log"
+  [[ -f "$b_log" && -f "$r_log" ]] || continue
+  b="$(extract_one "$b_log")"
+  r="$(extract_one "$r_log")"
+  echo -e "$name\t$b\t$r" >> "$phase"
+done
+
+echo "Wrote: $phase"
+column -t -s $'\t' "$phase" | head -n 30
+
+# 计算每个 phase 的变化百分比（rvv 相对 base）
+awk -F'\t' '
+NR==1 { print "dataset\ttotal_pct\tresid_pct\tjac_pct\tlin_pct"; next }
+{
+  bt=$2; br=$3; bj=$4; bl=$5;
+  rt=$6; rr=$7; rj=$8; rl=$9;
+  tp=(rt-bt)/bt*100.0;
+  rp=(rr-br)/br*100.0;
+  jp=(rj-bj)/bj*100.0;
+  lp=(rl-bl)/bl*100.0;
+  printf "%s\t%+.2f\t%+.2f\t%+.2f\t%+.2f\n", $1, tp, rp, jp, lp;
+}
+' "$phase" | tee "$delta" | column -t -s $'\t' | head -n 30
+
+echo "Wrote: $delta"
+```
+
+表格解读规则：
+
+- total_pct = (rvv_total - base_total) / base_total
+
+- jac_pct = (rvv_jac - base_jac) / base_jac
+
+- lin_pct = (rvv_lin - base_lin) / base_lin
+
+- resid_pct = (rvv_resid - base_resid) / base_resid
+
+```
++ 代表 RVV 比 base 慢（退化）
+- 代表 RVV 比 base 快（收益）
+```
+
+### 第一次测试
+
+```
+dataset                 total_pct  resid_pct  jac_pct  lin_pct
+city10000_1             +7.35      +0.09      +43.72   +0.56
+city10000_2             +8.72      +1.09      +41.21   +2.54
+city10000_3             +10.79     +1.42      +43.90   +6.31
+city10000_4             +8.76      +1.69      +48.02   +3.27
+city10000_5             +7.55      +0.65      +41.08   +2.88
+city10000_ground_truth  +11.83     +1.55      +47.87   +5.54
+Grid1000_1              +18.82     +3.88      +50.02   +6.21
+Grid1000_2              +19.31     +2.92      +51.47   +5.25
+Grid1000_3              +21.41     +3.98      +51.12   +8.52
+Grid1000_4              +14.49     +2.07      +38.85   +3.00
+Grid1000_5              +18.40     +1.59      +48.23   +5.77
+Grid1000_ground_truth   +11.73     +1.47      +40.03   +4.40
+M3500_1                 +17.46     +3.32      +47.29   +7.72
+M3500_2                 +17.41     +3.76      +46.96   +8.29
+M3500_3                 +8.30      -1.43      +43.90   +1.83
+M3500_4                 +15.71     +3.22      +46.74   +8.71
+M3500_5                 +11.12     -0.05      +44.38   +3.31
+M3500_ground_truth      +10.72     +1.84      +43.59   +2.42
+[openeuler@oerv-bpi-f3 ~]$
+[openeuler@oerv-bpi-f3 ~]$ echo "Wrote: $delta"
+Wrote: /home/openeuler/results/ceres_pose_graph_2d/rvv_sweep_20251225_090550/phase_delta.tsv
+[openeuler@oerv-bpi-f3 ~]$ cat /home/openeuler/results/ceres_pose_graph_2d/rvv_sweep_20251225_090550/phase_delta.tsv
+dataset	total_pct	resid_pct	jac_pct	lin_pct
+city10000_1	+7.35	+0.09	+43.72	+0.56
+city10000_2	+8.72	+1.09	+41.21	+2.54
+city10000_3	+10.79	+1.42	+43.90	+6.31
+city10000_4	+8.76	+1.69	+48.02	+3.27
+city10000_5	+7.55	+0.65	+41.08	+2.88
+city10000_ground_truth	+11.83	+1.55	+47.87	+5.54
+Grid1000_1	+18.82	+3.88	+50.02	+6.21
+Grid1000_2	+19.31	+2.92	+51.47	+5.25
+Grid1000_3	+21.41	+3.98	+51.12	+8.52
+Grid1000_4	+14.49	+2.07	+38.85	+3.00
+Grid1000_5	+18.40	+1.59	+48.23	+5.77
+Grid1000_ground_truth	+11.73	+1.47	+40.03	+4.40
+M3500_1	+17.46	+3.32	+47.29	+7.72
+M3500_2	+17.41	+3.76	+46.96	+8.29
+M3500_3	+8.30	-1.43	+43.90	+1.83
+M3500_4	+15.71	+3.22	+46.74	+8.71
+M3500_5	+11.12	-0.05	+44.38	+3.31
+M3500_ground_truth	+10.72	+1.84	+43.59	+2.42
+```
+
+结果：
+
+- total_pct：大致 +7% 到 +21%（全体退化）
+
+- resid_pct：大致 -1.4% 到 +4%（非常小）
+
+- lin_pct：大致 +0.5% 到 +8.7%（小幅）
+
+- jac_pct：几乎稳定在 +38% 到 +51%（巨大且一致）
+
+也就是说：RVV 版本的整体退化（+7%~+21%）主要由 Jacobian & residual evaluation 阶段的大幅变慢（约 +40%~+51%）驱动；Linear solver 只有小幅变慢，Residual-only 影响很小。
+
+所以来关注一下 Jacobain 对总退化贡献比例：
+
+```
+phase=/home/openeuler/results/ceres_pose_graph_2d/rvv_sweep_20251225_090550/phase_compare.tsv
+
+awk -F'\t' '
+NR==1{
+  print "dataset\tbase_total\tbase_jac_share\tbase_lin_share\t"
+        "total_delta_s\tjac_delta_s\tlin_delta_s\tresid_delta_s\t"
+        "jac_contrib_pct\tlin_contrib_pct";
+  next
+}
+{
+  bt=$2; br=$3; bj=$4; bl=$5;
+  rt=$6; rr=$7; rj=$8; rl=$9;
+
+  dt=rt-bt; dj=rj-bj; dl=rl-bl; dr=rr-br;
+
+  jac_share = (bt>0? 100*bj/bt : 0);
+  lin_share = (bt>0? 100*bl/bt : 0);
+
+  jac_contrib = (dt!=0? 100*dj/dt : 0);
+  lin_contrib = (dt!=0? 100*dl/dt : 0);
+
+  printf "%s\t%.3f\t%.1f%%\t%.1f%%\t%.3f\t%.3f\t%.3f\t%.3f\t%.1f%%\t%.1f%%\n",
+         $1, bt, jac_share, lin_share, dt, dj, dl, dr, jac_contrib, lin_contrib;
+}
+' "$phase" \
+| sort -t $'\t' -k9,9nr \
+| column -t -s $'\t' \
+| head -n 25
+```
+
+结果：
+
+```
+city10000_1             24.534      11.6%           75.4%           1.802  1.249  0.104  0.001   69.3%  5.8%
+Grid1000_4              2.085       23.5%           52.9%           0.302  0.190  0.033  0.003   63.0%  11.0%
+Grid1000_2              1.561       23.5%           52.3%           0.301  0.189  0.043  0.004   62.6%  14.2%
+Grid1000_1              1.030       23.5%           51.5%           0.194  0.121  0.033  0.003   62.5%  17.0%
+M3500_3                 5.527       11.6%           67.9%           0.458  0.282  0.069  -0.007  61.5%  15.0%
+Grid1000_5              2.058       23.0%           53.5%           0.379  0.228  0.064  0.003   60.2%  16.8%
+M3500_5                 6.140       14.6%           65.1%           0.683  0.397  0.132  -0.000  58.2%  19.4%
+Grid1000_3              1.505       23.6%           52.1%           0.322  0.182  0.067  0.005   56.5%  20.7%
+M3500_ground_truth      0.374       13.8%           32.0%           0.040  0.022  0.003  0.000   56.0%  7.2%
+city10000_2             11.776      11.6%           72.8%           1.027  0.563  0.218  0.006   54.9%  21.2%
+M3500_1                 11.389      19.0%           61.4%           1.988  1.024  0.540  0.029   51.5%  27.1%
+city10000_4             47.064      9.1%            79.4%           4.125  2.056  1.221  0.040   49.9%  29.6%
+M3500_2                 11.680      18.3%           62.1%           2.034  1.005  0.602  0.035   49.4%  29.6%
+Grid1000_ground_truth   0.070       14.3%           30.7%           0.008  0.004  0.001  0.000   48.8%  11.5%
+city10000_5             39.169      8.7%            79.6%           2.957  1.404  0.897  0.013   47.5%  30.3%
+city10000_ground_truth  2.382       11.5%           54.4%           0.282  0.131  0.072  0.001   46.4%  25.4%
+M3500_4                 6.876       14.4%           65.5%           1.080  0.462  0.392  0.019   42.8%  36.3%
+city10000_3             42.415      9.0%            79.3%           4.575  1.676  2.121  0.031   36.6%  46.4%
+dataset                 base_total  base_jac_share  base_lin_share
+```
+
+图表解释：
+
+```
+以任意一行（比如 city10000_1）为例，你的列含义是：
+
+base_total：base 总耗时（秒）
+
+base_jac_share：base 下 Jacobian 阶段占总时间比例 = base_jac / base_total
+
+base_lin_share：base 下 Linear solver 阶段占总时间比例 = base_lin / base_total
+
+total_delta_s：rvv 总耗时比 base 多出来的秒数 = (rvv_total - base_total)
+
+jac_delta_s：Jacobian 阶段多出来的秒数 = (rvv_jac - base_jac)
+
+lin_delta_s：Linear solver 多出来的秒数 = (rvv_lin - base_lin)
+
+resid_delta_s：Residual-only 多出来的秒数 = (rvv_resid - base_resid)
+
+jac_contrib_pct：总退化（total_delta_s）里，有多少百分比是 Jacobian 贡献的
+= jac_delta_s / total_delta_s
+
+lin_contrib_pct：同理，线性求解器对总退化的贡献
+= lin_delta_s / total_delta_s
+```
+
+> 相对退化（%）”不等于“贡献度（%）。
+
+由上表可知：
+
+```
+city10000_1：
+
+base_total 24.534s
+
+jac_share 11.6%，lin_share 75.4%（线性求解器本来就很大头）
+
+total_delta_s 1.802s 里：
+
+jac_delta_s 1.249s，占 69.3%
+
+lin_delta_s 0.104s，占 5.8%
+
+resid_delta_s ~0
+
+---
+
+city10000_3：
+
+base_total 42.415s
+
+jac_share 9.0%，lin_share 79.3%（线性求解器几乎占了 4/5）
+
+total_delta_s 4.575s 里：
+
+jac_delta_s 1.676s，占 36.6%
+
+lin_delta_s 2.121s，占 46.4%（比 Jacobian 还多）
+```
+
+所以说：Jacobian 是“相对退化最大的阶段”，但 Linear solver 因为基线占比太高，在部分大图上会成为“绝对退化贡献最大”的阶段。
+
+在后续的优化思路中不要指望“全局开 RVV”能自动加速稀疏分解，理由是：lin_contrib_pct >= 40%。
 
