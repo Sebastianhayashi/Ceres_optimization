@@ -1012,3 +1012,64 @@ ninja -C build-rvv-novec -v -j8 pose_graph_2d
 RVV_EXE="$HOME/ceres-solver/build-rvv-novec/bin/pose_graph_2d"
 echo "RVV_EXE=$RVV_EXE"
 ```
+
+这一次的结果是：
+
+```
+=== phase_delta ===
+dataset      total_pct  resid_pct  jac_pct  lin_pct
+city10000_1  +5.77      +10.74     +15.59   +4.09
+city10000_3  +5.51      +9.58      +14.54   +4.22
+```
+
+说明：
+
+- `total_pct` = (novec_total - base_total) / base_total × 100%
+- `resid_pct` = (novec_resid - base_resid) / base_resid × 100%
+- `jac_pct` = (novec_jac - base_jac) / base_jac × 100%
+- `lin_pct` = (novec_lin - base_lin) / base_lin × 100%
+
+== Top contrib: diff.city10000_1.txt ==
+  53.970   1.065     3.501      53.97%
+
+目前的情况是：
+> ratio ≈（novec 下该符号采样占用的 CPU 时间）/（base 下该符号采样占用的 CPU 时间）
+> 
+- `ratio > 1`：novec 更慢
+- `ratio < 1`：novec 更快
+- 第一列 `0.29% / 53.85% / 1.44%` 是 **base 下的 Overhead 占比**（注意：这是 base 的占比）
+
+下面的输出；
+
+```
+0.29%  1.319444  generic_dense_assignment_kernel<Jet ... 2x1/2x2...>
+0.68%  1.203488  generic_dense_assignment_kernel<Jet ... 3x1 ...>
+53.85% 1.067436  factorize_preordered (SimplicialLDLT)
+1.44%  0.994490  AutoDifferentiate<...PoseGraph2dErrorTerm...>
+```
+
+- AutoDifferentiate：不但没变慢，几乎持平，甚至略快
+- Jet 的 generic_dense_assignment_kernel：仍慢，但只剩 1.2～1.32x
+- factorize_preordered：只慢 6.7%，但它占比太大，所以它决定总耗时
+
+但是 phase_delta 里看到的总退化大约 +5.5%～+5.8%，其中 factorize 这一项单独就能解释掉大半
+
+```
+[openeuler@oerv-bpi-f3 ~]$ perf diff -c ratio -s symbol,dso \
+>   "$OUT/base.city10000_1.data" "$OUT/novec.city10000_1.data" \
+>   | egrep "AutoDifferentiate|generic_dense_assignment_kernel|factorize_preordered" | head -n 50
+egrep: warning: egrep is obsolescent; using grep -E
+
+     0.29%        1.319444  [.] Eigen::internal::generic_dense_assignment_kernel<Eigen::internal::evaluator<Eigen::Matrix<ceres::Jet<double, 6>, 2, 1, 0, 2, 1> >, Eigen::internal::evaluator<Eigen::Product<Eigen::Transpose<Eigen::Matrix<ceres::Jet<double, 6>, 2, 2, 0, 2, 2> >, Eigen::CwiseBinaryOp<Eigen::internal::scalar_difference_op<ceres::Jet<double, 6>, ceres::Jet<double, 6> >, Eigen::Matrix<ceres::Jet<double, 6>, 2, 1, 0, 2, 1> const, Eigen::Matrix<ceres::Jet<double, 6>, 2, 1, 0, 2, 1> const>, 1> >, Eigen::internal::assign_op<ceres::Jet<double, 6>, ceres::Jet<double, 6> >, 0>::assignCoeff(long) [clone .isra.0]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       pose_graph_2d
+     0.68%        1.203488  [.] Eigen::internal::generic_dense_assignment_kernel<Eigen::internal::evaluator<Eigen::Matrix<ceres::Jet<double, 6>, 3, 1, 0, 3, 1> >, Eigen::internal::evaluator<Eigen::Product<Eigen::CwiseUnaryOp<Eigen::internal::core_cast_op<double, ceres::Jet<double, 6> >, Eigen::Matrix<double, 3, 3, 0, 3, 3> const>, Eigen::Map<Eigen::Matrix<ceres::Jet<double, 6>, 3, 1, 0, 3, 1>, 0, Eigen::Stride<0, 0> >, 1> >, Eigen::internal::assign_op<ceres::Jet<double, 6>, ceres::Jet<double, 6> >, 0>::assignCoeff(long) [clone .isra.0]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       pose_graph_2d
+    53.85%        1.067436  [.] void Eigen::SimplicialCholeskyBase<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double, 0, int>, 2, Eigen::NaturalOrdering<int> > >::factorize_preordered<true, false>(Eigen::SparseMatrix<double, 0, int> const&)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     pose_graph_2d
+     1.44%        0.994490  [.] bool ceres::internal::AutoDifferentiate<3, ceres::internal::ParameterDims<false, 1, 1, 1, 1, 1, 1>, ceres::examples::PoseGraph2dErrorTerm, double>(ceres::examples::PoseGraph2dErrorTerm const&, double const* const*, int, double*, double**) [clone .isra.0]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      pose_graph_2d
+[openeuler@oerv-bpi-f3 ~]$
+[openeuler@oerv-bpi-f3 ~]$
+```
+
+下一步的方向应该是：novec 已经证明“禁用 auto-vectorize 能把它压回 1.0 附近”，所以避免 GCC auto-vectorize（至少避免生成 RVV 向量代码）。
+
+同时考虑到 Sparse Cholesky / factorize 作为性能消耗的大头，是需要依赖于 `-fno-tree-vectorize` 的，我们全局关闭的做法导致了他变慢。
+
+目前因为遇到 [perf 问题](https://gitee.com/src-openeuler/kernel/issues/IDGWNT?from=project-issue)而无法进行下一步。
